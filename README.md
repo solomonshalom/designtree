@@ -1,4 +1,5 @@
 # DesignExtract
+<img width="3248" height="1938" alt="image" src="https://github.com/user-attachments/assets/8a39d771-61e1-44ce-9500-f1140cd2c70d" />
 
 > **LOCAL-ONLY**: This tool runs locally with Playwright. It is not designed for serverless/cloud deployment.
 
