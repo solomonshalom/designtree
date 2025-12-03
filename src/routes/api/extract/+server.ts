@@ -3,35 +3,54 @@ import type { RequestHandler } from './$types';
 // @ts-ignore - extractors.js is a JS file
 import { extractBranding } from '$lib/extractors.js';
 import puppeteerCore from 'puppeteer-core';
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 // Dynamic imports for environment-specific browser
-let chromium: typeof import('@sparticuz/chromium-min') | null = null;
-let puppeteer: typeof import('puppeteer') | null = null;
+let chromium: any = null;
 const isVercel = process.env.VERCEL === '1' || process.env.VERCEL_ENV !== undefined;
 
 // Remote chromium URL for serverless (chromium-min requires this)
 const CHROMIUM_REMOTE_URL = 'https://github.com/nicholaspufal/chromium-aws-lambda-layer/releases/download/v119.0.0/chromium-v119.0.0-layer.zip';
 
+// Common Chrome paths for local development
+const LOCAL_CHROME_PATHS = [
+	'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', // macOS
+	'/usr/bin/google-chrome', // Linux
+	'/usr/bin/chromium-browser', // Linux Chromium
+	'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', // Windows
+	'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe', // Windows x86
+];
+
+function findLocalChrome(): string | null {
+	for (const path of LOCAL_CHROME_PATHS) {
+		if (existsSync(path)) return path;
+	}
+	return null;
+}
+
 async function getBrowser() {
 	if (isVercel) {
+		// Production: use @sparticuz/chromium-min with remote binary
 		if (!chromium) {
-			chromium = await import('@sparticuz/chromium-min');
+			chromium = (await import('@sparticuz/chromium-min')).default;
 		}
-		const executablePath = await chromium.default.executablePath(CHROMIUM_REMOTE_URL);
+		const executablePath = await chromium.executablePath(CHROMIUM_REMOTE_URL);
 		return puppeteerCore.launch({
-			args: chromium.default.args,
-			defaultViewport: chromium.default.defaultViewport,
+			args: chromium.args,
+			defaultViewport: chromium.defaultViewport,
 			executablePath,
-			headless: chromium.default.headless,
+			headless: chromium.headless,
 		});
 	} else {
-		if (!puppeteer) {
-			puppeteer = await import('puppeteer');
+		// Local development: use system Chrome
+		const localChrome = findLocalChrome();
+		if (!localChrome) {
+			throw new Error('Chrome not found. Please install Google Chrome for local development.');
 		}
-		return puppeteer.default.launch({
+		return puppeteerCore.launch({
+			executablePath: localChrome,
 			headless: true,
 			args: [
 				'--no-sandbox',
