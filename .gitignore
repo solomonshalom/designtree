@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 build/
 .svelte-kit/
+.vercel/
 
 # Environment files
 .env
