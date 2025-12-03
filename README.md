@@ -17,7 +17,7 @@ Extract complete design systems from any website. Get colors, typography, spacin
 
 - **Frontend**: SvelteKit 2.x with TypeScript
 - **Styling**: Bootstrap 5 + Custom CSS
-- **Extraction**: Playwright with stealth mode (based on [dembrandt](https://github.com/thevangelist/dembrandt))
+- **Extraction**: Puppeteer with stealth mode (based on [dembrandt](https://github.com/thevangelist/dembrandt))
 
 ## Getting Started
 
@@ -25,18 +25,21 @@ Extract complete design systems from any website. Get colors, typography, spacin
 
 - Node.js 18+
 - npm
+- **Google Chrome** (required for local development)
 
 ### Installation & Running
 
 ```bash
 cd designextract
 
-# Install dependencies (Playwright browsers install automatically)
+# Install dependencies
 npm install
 
 # Start development server
 npm run dev
 ```
+
+> **Note:** For local development, Google Chrome must be installed on your system. The app uses Chrome's executable directly via puppeteer-core. On macOS, install Chrome from https://www.google.com/chrome/
 
 Then open http://localhost:5173 and enter any URL to extract its design system.
 
