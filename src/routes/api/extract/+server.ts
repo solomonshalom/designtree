@@ -8,23 +8,21 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 // Dynamic imports for environment-specific browser
-let chromium: typeof import('@sparticuz/chromium') | null = null;
+let chromium: typeof import('@sparticuz/chromium-min') | null = null;
 let puppeteer: typeof import('puppeteer') | null = null;
 const isVercel = process.env.VERCEL === '1' || process.env.VERCEL_ENV !== undefined;
+
+// Remote chromium URL for serverless (chromium-min requires this)
+const CHROMIUM_REMOTE_URL = 'https://github.com/nicholaspufal/chromium-aws-lambda-layer/releases/download/v119.0.0/chromium-v119.0.0-layer.zip';
 
 async function getBrowser() {
 	if (isVercel) {
 		if (!chromium) {
-			chromium = await import('@sparticuz/chromium');
+			chromium = await import('@sparticuz/chromium-min');
 		}
-		const executablePath = await chromium.default.executablePath();
+		const executablePath = await chromium.default.executablePath(CHROMIUM_REMOTE_URL);
 		return puppeteerCore.launch({
-			args: [
-				...chromium.default.args,
-				'--disable-blink-features=AutomationControlled',
-				'--disable-web-security',
-				'--disable-features=IsolateOrigins,site-per-process'
-			],
+			args: chromium.default.args,
 			defaultViewport: chromium.default.defaultViewport,
 			executablePath,
 			headless: chromium.default.headless,

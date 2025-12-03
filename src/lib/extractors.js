@@ -13,20 +13,18 @@ let chromium = null;
 let puppeteer = null;
 const isVercel = typeof process !== 'undefined' && (process.env?.VERCEL === '1' || process.env?.VERCEL_ENV !== undefined);
 
+// Remote chromium URL for serverless (chromium-min requires this)
+const CHROMIUM_REMOTE_URL = 'https://github.com/nicholaspufal/chromium-aws-lambda-layer/releases/download/v119.0.0/chromium-v119.0.0-layer.zip';
+
 async function launchBrowser() {
   if (isVercel) {
-    // Production: use @sparticuz/chromium
+    // Production: use @sparticuz/chromium-min with remote binary
     if (!chromium) {
-      chromium = (await import('@sparticuz/chromium')).default;
+      chromium = (await import('@sparticuz/chromium-min')).default;
     }
-    const executablePath = await chromium.executablePath();
+    const executablePath = await chromium.executablePath(CHROMIUM_REMOTE_URL);
     return puppeteerCore.launch({
-      args: [
-        ...chromium.args,
-        '--disable-blink-features=AutomationControlled',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process'
-      ],
+      args: chromium.args,
       defaultViewport: chromium.defaultViewport,
       executablePath,
       headless: chromium.headless,

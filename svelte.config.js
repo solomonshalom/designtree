@@ -9,7 +9,7 @@ const config = {
 			runtime: 'nodejs20.x',
 			memory: 1024,
 			maxDuration: 60,
-			external: ['@sparticuz/chromium']
+			external: ['@sparticuz/chromium-min']
 		})
 	}
 };
