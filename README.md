@@ -19,7 +19,7 @@ Extract complete design systems from any website. Get colors, typography, spacin
 
 - **Frontend**: SvelteKit 2.x with TypeScript
 - **Styling**: Bootstrap 5 + Custom CSS
-- **Extraction**: Playwright with stealth mode (based on [shsh](https://github.com/justice-rest/shsh))
+- **Extraction**: Playwright with stealth mode (based on [dembrandt](https://github.com/thevangelist/dembrandt))
 
 ## Getting Started
 
