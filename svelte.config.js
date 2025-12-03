@@ -6,9 +6,10 @@ const config = {
 	preprocess: vitePreprocess(),
 	kit: {
 		adapter: adapter({
-			runtime: 'nodejs22.x',
+			runtime: 'nodejs20.x',
 			memory: 1024,
-			maxDuration: 60
+			maxDuration: 60,
+			external: ['@sparticuz/chromium']
 		})
 	}
 };
