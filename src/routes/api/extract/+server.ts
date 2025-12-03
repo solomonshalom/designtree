@@ -2,67 +2,10 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 // @ts-ignore - extractors.js is a JS file
 import { extractBranding } from '$lib/extractors.js';
-import puppeteerCore from 'puppeteer-core';
-import { readFileSync, readdirSync, existsSync } from 'fs';
+import { chromium } from 'playwright';
+import { readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-
-// Dynamic imports for environment-specific browser
-let chromium: any = null;
-const isVercel = process.env.VERCEL === '1' || process.env.VERCEL_ENV !== undefined;
-
-// Remote chromium URL for serverless (chromium-min requires this)
-const CHROMIUM_REMOTE_URL = 'https://github.com/nicholaspufal/chromium-aws-lambda-layer/releases/download/v119.0.0/chromium-v119.0.0-layer.zip';
-
-// Common Chrome paths for local development
-const LOCAL_CHROME_PATHS = [
-	'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', // macOS
-	'/usr/bin/google-chrome', // Linux
-	'/usr/bin/chromium-browser', // Linux Chromium
-	'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', // Windows
-	'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe', // Windows x86
-];
-
-function findLocalChrome(): string | null {
-	for (const path of LOCAL_CHROME_PATHS) {
-		if (existsSync(path)) return path;
-	}
-	return null;
-}
-
-async function getBrowser() {
-	if (isVercel) {
-		// Production: use @sparticuz/chromium-min with remote binary
-		if (!chromium) {
-			chromium = (await import('@sparticuz/chromium-min')).default;
-		}
-		const executablePath = await chromium.executablePath(CHROMIUM_REMOTE_URL);
-		return puppeteerCore.launch({
-			args: chromium.args,
-			defaultViewport: chromium.defaultViewport,
-			executablePath,
-			headless: chromium.headless,
-		});
-	} else {
-		// Local development: use system Chrome
-		const localChrome = findLocalChrome();
-		if (!localChrome) {
-			throw new Error('Chrome not found. Please install Google Chrome for local development.');
-		}
-		return puppeteerCore.launch({
-			executablePath: localChrome,
-			headless: true,
-			args: [
-				'--no-sandbox',
-				'--disable-setuid-sandbox',
-				'--disable-blink-features=AutomationControlled',
-				'--disable-web-security',
-				'--disable-features=IsolateOrigins,site-per-process',
-				'--disable-dev-shm-usage'
-			]
-		});
-	}
-}
 
 // Create a mock spinner that does nothing (we don't need CLI output)
 const mockSpinner = {
@@ -382,10 +325,20 @@ export const POST: RequestHandler = async ({ request }) => {
 			return json({ error: 'Invalid URL format' }, { status: 400 });
 		}
 
-		// Launch browser (uses @sparticuz/chromium on Vercel, puppeteer locally)
-		browser = await getBrowser();
+		// Launch Playwright browser with stealth args
+		browser = await chromium.launch({
+			headless: true,
+			args: [
+				'--no-sandbox',
+				'--disable-setuid-sandbox',
+				'--disable-blink-features=AutomationControlled',
+				'--disable-web-security',
+				'--disable-features=IsolateOrigins,site-per-process',
+				'--disable-dev-shm-usage'
+			]
+		});
 
-		// Use the extraction function (it will create its own page with stealth settings)
+		// Use the extraction function (it will create its own context with stealth settings)
 		const result = await extractBranding(targetUrl, mockSpinner, browser, {
 			navigationTimeout: 90000,
 			darkMode: options.darkMode || false,
@@ -393,26 +346,28 @@ export const POST: RequestHandler = async ({ request }) => {
 			slow: options.slow || false
 		});
 
-		// Create a new page for tech stack scanning
-		const scanPage = await browser.newPage();
-		await scanPage.setViewport({ width: 1920, height: 1080 });
-		await scanPage.setUserAgent(
-			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-		);
+		// Create a new context for tech stack scanning
+		const context = await browser.newContext({
+			viewport: { width: 1920, height: 1080 },
+			userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+			locale: 'en-US'
+		});
+
+		const scanPage = await context.newPage();
 
 		// Capture response headers
 		const responseHeaders = new Map<string, string>();
-		scanPage.on('response', (response: any) => {
+		scanPage.on('response', (response) => {
 			if (response.url() === targetUrl || response.url().replace(/\/$/, '') === targetUrl.replace(/\/$/, '')) {
 				const headers = response.headers();
 				for (const [key, value] of Object.entries(headers)) {
-					responseHeaders.set(key.toLowerCase(), value as string);
+					responseHeaders.set(key.toLowerCase(), value);
 				}
 			}
 		});
 
 		await scanPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-		await scanPage.evaluate((ms: number) => new Promise(resolve => setTimeout(resolve, ms)), 3000);
+		await scanPage.waitForTimeout(3000);
 
 		// Scan for tech stack
 		const techStack = await scanTechStack(scanPage, responseHeaders);

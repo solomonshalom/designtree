@@ -3,73 +3,13 @@
  *
  * Core extraction logic with stealth mode, retry mechanisms, and parallel processing.
  * Handles bot detection, SPA hydration, and comprehensive design token extraction.
+ *
+ * LOCAL-ONLY: This runs with Playwright and requires local Chromium installation.
+ * Run `npx playwright install chromium` if browsers aren't installed.
  */
 
-import puppeteerCore from "puppeteer-core";
+import { chromium } from "playwright";
 import chalk from "chalk";
-import { existsSync } from "fs";
-
-// Dynamic imports for environment-specific browser
-let chromium = null;
-const isVercel = typeof process !== 'undefined' && (process.env?.VERCEL === '1' || process.env?.VERCEL_ENV !== undefined);
-
-// Remote chromium URL for serverless (chromium-min requires this)
-const CHROMIUM_REMOTE_URL = 'https://github.com/nicholaspufal/chromium-aws-lambda-layer/releases/download/v119.0.0/chromium-v119.0.0-layer.zip';
-
-// Common Chrome paths for local development
-const LOCAL_CHROME_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', // macOS
-  '/usr/bin/google-chrome', // Linux
-  '/usr/bin/chromium-browser', // Linux Chromium
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', // Windows
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe', // Windows x86
-];
-
-function findLocalChrome() {
-  for (const path of LOCAL_CHROME_PATHS) {
-    if (existsSync(path)) return path;
-  }
-  return null;
-}
-
-async function launchBrowser() {
-  if (isVercel) {
-    // Production: use @sparticuz/chromium-min with remote binary
-    if (!chromium) {
-      chromium = (await import('@sparticuz/chromium-min')).default;
-    }
-    const executablePath = await chromium.executablePath(CHROMIUM_REMOTE_URL);
-    return puppeteerCore.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath,
-      headless: chromium.headless,
-    });
-  } else {
-    // Local development: use system Chrome
-    const localChrome = findLocalChrome();
-    if (!localChrome) {
-      throw new Error('Chrome not found. Please install Google Chrome for local development.');
-    }
-    return puppeteerCore.launch({
-      executablePath: localChrome,
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-dev-shm-usage'
-      ]
-    });
-  }
-}
-
-// Helper for waitForTimeout (Puppeteer deprecated this, use page.evaluate with setTimeout)
-async function waitForTimeout(page, ms) {
-  await page.evaluate((ms) => new Promise(resolve => setTimeout(resolve, ms)), ms);
-}
 
 /**
  * Main extraction function - orchestrates the entire brand analysis process
@@ -96,25 +36,33 @@ export async function extractBranding(
   const timeouts = [];
 
   if (ownBrowser) {
-    browser = await launchBrowser();
+    // Launch Playwright browser with stealth args
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-web-security",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-dev-shm-usage",
+      ],
+    });
   }
 
-  spinner.text = "Creating browser page with stealth mode...";
-
-  const page = await browser.newPage();
-
-  // Set viewport
-  await page.setViewport({ width: 1920, height: 1080 });
-
-  // Set user agent
-  await page.setUserAgent(
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-  );
+  spinner.text = "Creating browser context with stealth mode...";
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    locale: "en-US",
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
 
   // Full stealth — kills 99% of Cloudflare bot detection
   spinner.text = "Injecting anti-detection scripts...";
 
-  await page.evaluateOnNewDocument(() => {
+  await context.addInitScript(() => {
     Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
     Object.defineProperty(navigator, "deviceMemory", { get: () => 8 });
     Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
@@ -128,12 +76,14 @@ export async function extractBranding(
       app: {},
     };
 
-    // Remove Puppeteer/automation traces
+    // Remove Playwright traces
     delete navigator.__proto__.webdriver;
     delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
     delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
     delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
   });
+
+  const page = await context.newPage();
 
   try {
     let attempts = 0;
@@ -185,7 +135,7 @@ export async function extractBranding(
         // Give SPAs time to hydrate (Linear, Figma, Notion, etc.)
         spinner.start("Waiting for SPA hydration...");
         const hydrationTime = 8000 * timeoutMultiplier;
-        await waitForTimeout(page, hydrationTime);
+        await page.waitForTimeout(hydrationTime);
         spinner.stop();
         console.log(chalk.hex('#50FA7B')(`  ✓ Hydration complete (${hydrationTime/1000}s)`));
 
@@ -216,7 +166,7 @@ export async function extractBranding(
         // Final hydration wait
         spinner.start("Final content stabilization...");
         const stabilizationTime = 4000 * timeoutMultiplier;
-        await waitForTimeout(page, stabilizationTime);
+        await page.waitForTimeout(stabilizationTime);
         spinner.stop();
         console.log(chalk.hex('#50FA7B')(`  ✓ Page fully loaded and stable`));
 
@@ -237,7 +187,7 @@ export async function extractBranding(
             `  ⚠ Content length: ${contentLength} chars (expected >100)`
           )
         );
-        await waitForTimeout(page, 3000 * timeoutMultiplier);
+        await page.waitForTimeout(3000 * timeoutMultiplier);
       } catch (err) {
         const errorMsg = err.message || '';
 
@@ -283,7 +233,7 @@ export async function extractBranding(
           `Navigation failed (attempt ${attempts}/${maxAttempts}), retrying...`
         );
         console.log(`  ↳ Error: ${friendlyError}`);
-        await waitForTimeout(page, 3000 * timeoutMultiplier);
+        await page.waitForTimeout(3000 * timeoutMultiplier);
       }
     }
 
@@ -428,7 +378,7 @@ export async function extractBranding(
 
         // Hover over element
         await element.hover({ timeout: 1000 * timeoutMultiplier }).catch(() => {});
-        await waitForTimeout(page, 100 * timeoutMultiplier); // Wait for transitions
+        await page.waitForTimeout(100 * timeoutMultiplier); // Wait for transitions
 
         // Get hover state colors
         const afterHover = await element.evaluate(el => {
@@ -484,7 +434,7 @@ export async function extractBranding(
         if (['input', 'textarea', 'select', 'button'].includes(beforeState.tag)) {
           try {
             await element.focus({ timeout: 500 * timeoutMultiplier });
-            await waitForTimeout(page, 100 * timeoutMultiplier);
+            await page.waitForTimeout(100 * timeoutMultiplier);
 
             const afterFocus = await element.evaluate(el => {
               const computed = getComputedStyle(el);
@@ -592,10 +542,10 @@ export async function extractBranding(
       });
 
       // Emulate prefers-color-scheme: dark
-      await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+      await page.emulateMedia({ colorScheme: "dark" });
 
       // Wait for transitions to complete
-      await waitForTimeout(page, 500 * timeoutMultiplier);
+      await page.waitForTimeout(500 * timeoutMultiplier);
 
       const darkModeColors = await extractColors(page);
       const darkModeButtons = await extractButtonStyles(page);
@@ -637,10 +587,10 @@ export async function extractBranding(
       spinner.start("Extracting mobile viewport colors...");
 
       // Change viewport to mobile
-      await page.setViewport({ width: 375, height: 667 });
+      await page.setViewportSize({ width: 375, height: 667 });
 
       // Wait for responsive changes
-      await waitForTimeout(page, 500 * timeoutMultiplier);
+      await page.waitForTimeout(500 * timeoutMultiplier);
 
       const mobileColors = await extractColors(page);
 
