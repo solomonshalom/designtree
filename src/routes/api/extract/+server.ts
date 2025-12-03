@@ -2,10 +2,50 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 // @ts-ignore - extractors.js is a JS file
 import { extractBranding } from '$lib/extractors.js';
-import { chromium } from 'playwright-core';
+import puppeteerCore from 'puppeteer-core';
 import { readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+// Dynamic imports for environment-specific browser
+let chromium: typeof import('@sparticuz/chromium') | null = null;
+let puppeteer: typeof import('puppeteer') | null = null;
+const isVercel = process.env.VERCEL === '1' || process.env.VERCEL_ENV !== undefined;
+
+async function getBrowser() {
+	if (isVercel) {
+		if (!chromium) {
+			chromium = await import('@sparticuz/chromium');
+		}
+		const executablePath = await chromium.default.executablePath();
+		return puppeteerCore.launch({
+			args: [
+				...chromium.default.args,
+				'--disable-blink-features=AutomationControlled',
+				'--disable-web-security',
+				'--disable-features=IsolateOrigins,site-per-process'
+			],
+			defaultViewport: chromium.default.defaultViewport,
+			executablePath,
+			headless: chromium.default.headless,
+		});
+	} else {
+		if (!puppeteer) {
+			puppeteer = await import('puppeteer');
+		}
+		return puppeteer.default.launch({
+			headless: true,
+			args: [
+				'--no-sandbox',
+				'--disable-setuid-sandbox',
+				'--disable-blink-features=AutomationControlled',
+				'--disable-web-security',
+				'--disable-features=IsolateOrigins,site-per-process',
+				'--disable-dev-shm-usage'
+			]
+		});
+	}
+}
 
 // Create a mock spinner that does nothing (we don't need CLI output)
 const mockSpinner = {
@@ -325,52 +365,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			return json({ error: 'Invalid URL format' }, { status: 400 });
 		}
 
-		// Launch browser with stealth args (same as dembrandt)
-		browser = await chromium.launch({
-			headless: true,
-			args: [
-				'--no-sandbox',
-				'--disable-setuid-sandbox',
-				'--disable-blink-features=AutomationControlled',
-				'--disable-web-security',
-				'--disable-features=IsolateOrigins,site-per-process',
-				'--disable-dev-shm-usage'
-			]
-		});
+		// Launch browser (uses @sparticuz/chromium on Vercel, puppeteer locally)
+		browser = await getBrowser();
 
-		// Create context with stealth settings
-		const context = await browser.newContext({
-			viewport: options.mobile ? { width: 375, height: 667 } : { width: 1920, height: 1080 },
-			userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-			locale: 'en-US'
-		});
-
-		// Stealth mode injections
-		await context.addInitScript(() => {
-			Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-			Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-			Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
-			Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
-			// @ts-ignore
-			window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-			// @ts-ignore
-			delete navigator.__proto__.webdriver;
-		});
-
-		const page = await context.newPage();
-
-		// Capture response headers
-		const responseHeaders = new Map<string, string>();
-		page.on('response', (response) => {
-			if (response.url() === targetUrl || response.url().replace(/\/$/, '') === targetUrl.replace(/\/$/, '')) {
-				response.headers();
-				for (const [key, value] of Object.entries(response.headers())) {
-					responseHeaders.set(key.toLowerCase(), value);
-				}
-			}
-		});
-
-		// Use the actual dembrandt extraction function
+		// Use the extraction function (it will create its own page with stealth settings)
 		const result = await extractBranding(targetUrl, mockSpinner, browser, {
 			navigationTimeout: 90000,
 			darkMode: options.darkMode || false,
@@ -378,10 +376,26 @@ export const POST: RequestHandler = async ({ request }) => {
 			slow: options.slow || false
 		});
 
-		// Get a fresh page for tech stack scanning (reuse the context)
-		const scanPage = await context.newPage();
+		// Create a new page for tech stack scanning
+		const scanPage = await browser.newPage();
+		await scanPage.setViewport({ width: 1920, height: 1080 });
+		await scanPage.setUserAgent(
+			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+		);
+
+		// Capture response headers
+		const responseHeaders = new Map<string, string>();
+		scanPage.on('response', (response: any) => {
+			if (response.url() === targetUrl || response.url().replace(/\/$/, '') === targetUrl.replace(/\/$/, '')) {
+				const headers = response.headers();
+				for (const [key, value] of Object.entries(headers)) {
+					responseHeaders.set(key.toLowerCase(), value as string);
+				}
+			}
+		});
+
 		await scanPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-		await scanPage.waitForTimeout(3000);
+		await scanPage.evaluate((ms: number) => new Promise(resolve => setTimeout(resolve, ms)), 3000);
 
 		// Scan for tech stack
 		const techStack = await scanTechStack(scanPage, responseHeaders);

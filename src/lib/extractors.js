@@ -5,8 +5,55 @@
  * Handles bot detection, SPA hydration, and comprehensive design token extraction.
  */
 
-import { chromium } from "playwright-core";
+import puppeteerCore from "puppeteer-core";
 import chalk from "chalk";
+
+// Dynamic imports for environment-specific browser
+let chromium = null;
+let puppeteer = null;
+const isVercel = typeof process !== 'undefined' && (process.env?.VERCEL === '1' || process.env?.VERCEL_ENV !== undefined);
+
+async function launchBrowser() {
+  if (isVercel) {
+    // Production: use @sparticuz/chromium
+    if (!chromium) {
+      chromium = (await import('@sparticuz/chromium')).default;
+    }
+    const executablePath = await chromium.executablePath();
+    return puppeteerCore.launch({
+      args: [
+        ...chromium.args,
+        '--disable-blink-features=AutomationControlled',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process'
+      ],
+      defaultViewport: chromium.defaultViewport,
+      executablePath,
+      headless: chromium.headless,
+    });
+  } else {
+    // Local development: use full puppeteer
+    if (!puppeteer) {
+      puppeteer = (await import('puppeteer')).default;
+    }
+    return puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-dev-shm-usage'
+      ]
+    });
+  }
+}
+
+// Helper for waitForTimeout (Puppeteer deprecated this, use page.evaluate with setTimeout)
+async function waitForTimeout(page, ms) {
+  await page.evaluate((ms) => new Promise(resolve => setTimeout(resolve, ms)), ms);
+}
 
 /**
  * Main extraction function - orchestrates the entire brand analysis process
@@ -33,32 +80,25 @@ export async function extractBranding(
   const timeouts = [];
 
   if (ownBrowser) {
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-web-security",
-        "--disable-features=IsolateOrigins,site-per-process",
-        "--disable-dev-shm-usage",
-      ],
-    });
+    browser = await launchBrowser();
   }
 
-  spinner.text = "Creating browser context with stealth mode...";
-  const context = await browser.newContext({
-    viewport: { width: 1920, height: 1080 },
-    userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    locale: "en-US",
-    permissions: ["clipboard-read", "clipboard-write"],
-  });
+  spinner.text = "Creating browser page with stealth mode...";
+
+  const page = await browser.newPage();
+
+  // Set viewport
+  await page.setViewport({ width: 1920, height: 1080 });
+
+  // Set user agent
+  await page.setUserAgent(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  );
 
   // Full stealth — kills 99% of Cloudflare bot detection
   spinner.text = "Injecting anti-detection scripts...";
 
-  await context.addInitScript(() => {
+  await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
     Object.defineProperty(navigator, "deviceMemory", { get: () => 8 });
     Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
@@ -72,14 +112,12 @@ export async function extractBranding(
       app: {},
     };
 
-    // Remove Playwright traces
+    // Remove Puppeteer/automation traces
     delete navigator.__proto__.webdriver;
     delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
     delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
     delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
   });
-
-  const page = await context.newPage();
 
   try {
     let attempts = 0;
@@ -131,7 +169,7 @@ export async function extractBranding(
         // Give SPAs time to hydrate (Linear, Figma, Notion, etc.)
         spinner.start("Waiting for SPA hydration...");
         const hydrationTime = 8000 * timeoutMultiplier;
-        await page.waitForTimeout(hydrationTime);
+        await waitForTimeout(page, hydrationTime);
         spinner.stop();
         console.log(chalk.hex('#50FA7B')(`  ✓ Hydration complete (${hydrationTime/1000}s)`));
 
@@ -162,7 +200,7 @@ export async function extractBranding(
         // Final hydration wait
         spinner.start("Final content stabilization...");
         const stabilizationTime = 4000 * timeoutMultiplier;
-        await page.waitForTimeout(stabilizationTime);
+        await waitForTimeout(page, stabilizationTime);
         spinner.stop();
         console.log(chalk.hex('#50FA7B')(`  ✓ Page fully loaded and stable`));
 
@@ -183,7 +221,7 @@ export async function extractBranding(
             `  ⚠ Content length: ${contentLength} chars (expected >100)`
           )
         );
-        await page.waitForTimeout(3000 * timeoutMultiplier);
+        await waitForTimeout(page, 3000 * timeoutMultiplier);
       } catch (err) {
         const errorMsg = err.message || '';
 
@@ -229,7 +267,7 @@ export async function extractBranding(
           `Navigation failed (attempt ${attempts}/${maxAttempts}), retrying...`
         );
         console.log(`  ↳ Error: ${friendlyError}`);
-        await page.waitForTimeout(3000 * timeoutMultiplier);
+        await waitForTimeout(page, 3000 * timeoutMultiplier);
       }
     }
 
@@ -374,7 +412,7 @@ export async function extractBranding(
 
         // Hover over element
         await element.hover({ timeout: 1000 * timeoutMultiplier }).catch(() => {});
-        await page.waitForTimeout(100 * timeoutMultiplier); // Wait for transitions
+        await waitForTimeout(page, 100 * timeoutMultiplier); // Wait for transitions
 
         // Get hover state colors
         const afterHover = await element.evaluate(el => {
@@ -430,7 +468,7 @@ export async function extractBranding(
         if (['input', 'textarea', 'select', 'button'].includes(beforeState.tag)) {
           try {
             await element.focus({ timeout: 500 * timeoutMultiplier });
-            await page.waitForTimeout(100 * timeoutMultiplier);
+            await waitForTimeout(page, 100 * timeoutMultiplier);
 
             const afterFocus = await element.evaluate(el => {
               const computed = getComputedStyle(el);
@@ -538,10 +576,10 @@ export async function extractBranding(
       });
 
       // Emulate prefers-color-scheme: dark
-      await page.emulateMedia({ colorScheme: "dark" });
+      await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
 
       // Wait for transitions to complete
-      await page.waitForTimeout(500 * timeoutMultiplier);
+      await waitForTimeout(page, 500 * timeoutMultiplier);
 
       const darkModeColors = await extractColors(page);
       const darkModeButtons = await extractButtonStyles(page);
@@ -583,10 +621,10 @@ export async function extractBranding(
       spinner.start("Extracting mobile viewport colors...");
 
       // Change viewport to mobile
-      await page.setViewportSize({ width: 375, height: 667 });
+      await page.setViewport({ width: 375, height: 667 });
 
       // Wait for responsive changes
-      await page.waitForTimeout(500 * timeoutMultiplier);
+      await waitForTimeout(page, 500 * timeoutMultiplier);
 
       const mobileColors = await extractColors(page);
 
